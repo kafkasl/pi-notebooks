@@ -1,0 +1,3 @@
+*.ipynb
+node_modules/
+.env

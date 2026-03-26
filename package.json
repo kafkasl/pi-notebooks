@@ -1,0 +1,10 @@
+{
+  "name": "pi-notebooks",
+  "version": "0.1.0",
+  "description": "Jupyter notebook (.ipynb) cell-level read, edit, search, and management for pi",
+  "keywords": ["pi-package"],
+  "license": "MIT",
+  "pi": {
+    "skills": ["./skills"]
+  }
+}
