@@ -1,22 +1,26 @@
 #!/usr/bin/env python3
+# /// script
+# requires-python = ">=3.10"
+# dependencies = ["nbformat"]
+# ///
 """nb - Jupyter notebook CLI for structured cell access."""
 
-import json, re, sys, difflib, textwrap
-from pathlib import Path
+import re, sys, difflib
+import nbformat
+from nbformat.v4 import new_notebook, new_code_cell, new_markdown_cell, new_raw_cell
 
 # --- Notebook I/O ---
 
+_cell_makers = {'code': new_code_cell, 'markdown': new_markdown_cell, 'raw': new_raw_cell}
+
 def load_nb(path):
-    with open(path) as f: return json.load(f)
+    with open(path) as f: return nbformat.read(f, as_version=4)
 
 def save_nb(nb, path):
-    with open(path, 'w') as f: json.dump(nb, f, indent=1, ensure_ascii=False)
-    # normalize trailing newline
-    p = Path(path)
-    txt = p.read_text()
-    if not txt.endswith('\n'): p.write_text(txt + '\n')
+    with open(path, 'w') as f: nbformat.write(nb, f)
 
-def cell_source(cell): return ''.join(cell['source'])
+def cell_source(cell): return cell['source']
+
 def cell_output_text(cell):
     """Extract text from cell outputs."""
     parts = []
@@ -81,7 +85,7 @@ def show_diff(old, new):
 
 def edit_cell(nb, path, idx, transform_fn, *args, **kwargs):
     """Read cell source, apply transform, write back, show diff."""
-    cell = nb['cells'][idx]
+    cell = nb.cells[idx]
     old = cell_source(cell)
     try:
         new = transform_fn(old, *args, **kwargs)
@@ -89,19 +93,30 @@ def edit_cell(nb, path, idx, transform_fn, *args, **kwargs):
         print(f"Error: {e}", file=sys.stderr)
         sys.exit(1)
     diff = show_diff(old, new)
-    cell['source'] = new.splitlines(True)
-    # fix last line to not have trailing newline (ipynb convention)
-    if cell['source'] and cell['source'][-1].endswith('\n'):
-        cell['source'][-1] = cell['source'][-1][:-1]
+    cell['source'] = new
     save_nb(nb, path)
     print(diff)
 
 # --- Commands ---
 
+def cmd_create(path, title=None, kernel='python3', **kw):
+    """Create a new empty notebook."""
+    nb = new_notebook()
+    nb.metadata.kernelspec = {
+        'display_name': 'Python 3',
+        'language': 'python',
+        'name': kernel,
+    }
+    if title:
+        nb.cells.append(new_markdown_cell(title))
+    save_nb(nb, path)
+    n = len(nb.cells)
+    print(f"Created {path} ({n} cell{'s' if n != 1 else ''})")
+
 def cmd_view(path, **kw):
     """Show all cells: index, type, preview."""
     nb = load_nb(path)
-    for i, c in enumerate(nb['cells']):
+    for i, c in enumerate(nb.cells):
         src = cell_source(c).strip()
         typ = c['cell_type'][:4]
         first_line = src.split('\n')[0][:120] if src else '(empty)'
@@ -113,7 +128,7 @@ def cmd_read(path, idx, nums=False, **kw):
     """Read cell content, optionally with line numbers."""
     nb = load_nb(path)
     idx = int(idx)
-    cell = nb['cells'][idx]
+    cell = nb.cells[idx]
     src = cell_source(cell)
     typ = cell['cell_type']
     print(f"--- Cell [{idx}] ({typ}) ---")
@@ -127,7 +142,7 @@ def cmd_output(path, idx, **kw):
     """View cell output."""
     nb = load_nb(path)
     idx = int(idx)
-    cell = nb['cells'][idx]
+    cell = nb.cells[idx]
     out = cell_output_text(cell)
     if out:
         print(f"--- Output [{idx}] ---")
@@ -139,7 +154,7 @@ def cmd_search(path, pattern, **kw):
     """Search cells by regex pattern."""
     nb = load_nb(path)
     pat = re.compile(pattern, re.MULTILINE | re.DOTALL)
-    for i, c in enumerate(nb['cells']):
+    for i, c in enumerate(nb.cells):
         src = cell_source(c)
         matches = list(pat.finditer(src))
         if matches:
@@ -147,7 +162,6 @@ def cmd_search(path, pattern, **kw):
             first = src.strip().split('\n')[0][:100]
             print(f"[{i:3d}] {typ:4s} ({len(matches)} match) {first}")
             for m in matches[:3]:
-                # show the line containing the match
                 line_start = src.rfind('\n', 0, m.start()) + 1
                 line_end = src.find('\n', m.end())
                 if line_end == -1: line_end = len(src)
@@ -157,17 +171,18 @@ def cmd_search(path, pattern, **kw):
 def cmd_add(path, content, after=None, before=None, type='code', **kw):
     """Add a new cell."""
     nb = load_nb(path)
-    cell = {'cell_type': type, 'metadata': {}, 'source': content.splitlines(True)}
-    if type == 'code':
-        cell['execution_count'] = None
-        cell['outputs'] = []
+    maker = _cell_makers.get(type)
+    if not maker:
+        print(f"Error: unknown cell type '{type}'. Use: code, markdown, raw", file=sys.stderr)
+        sys.exit(1)
+    cell = maker(content)
     if after is not None:
         pos = int(after) + 1
     elif before is not None:
         pos = int(before)
     else:
-        pos = len(nb['cells'])
-    nb['cells'].insert(pos, cell)
+        pos = len(nb.cells)
+    nb.cells.insert(pos, cell)
     save_nb(nb, path)
     print(f"Added {type} cell at [{pos}]")
 
@@ -175,7 +190,7 @@ def cmd_delete(path, idx, **kw):
     """Delete a cell."""
     nb = load_nb(path)
     idx = int(idx)
-    cell = nb['cells'].pop(idx)
+    cell = nb.cells.pop(idx)
     save_nb(nb, path)
     typ = cell['cell_type']
     src = cell_source(cell).strip().split('\n')[0][:80]
@@ -202,10 +217,8 @@ def cmd_replace(path, idx, content, **kw):
     """Replace entire cell content."""
     nb = load_nb(path)
     idx = int(idx)
-    old = cell_source(nb['cells'][idx])
-    nb['cells'][idx]['source'] = content.splitlines(True)
-    if nb['cells'][idx]['source'] and nb['cells'][idx]['source'][-1].endswith('\n'):
-        nb['cells'][idx]['source'][-1] = nb['cells'][idx]['source'][-1][:-1]
+    old = cell_source(nb.cells[idx])
+    nb.cells[idx]['source'] = content
     save_nb(nb, path)
     print(show_diff(old, content))
 
@@ -214,6 +227,7 @@ def cmd_replace(path, idx, content, **kw):
 USAGE = """nb - Jupyter notebook CLI
 
 Usage:
+  nb create <path> [--title "# Title"] [--kernel python3]  Create notebook
   nb view <path>                                     Show all cells
   nb read <path> <idx> [--nums]                      Read cell content
   nb output <path> <idx>                             View cell output
@@ -245,7 +259,11 @@ def main():
 
     cmd = args.pop(0)
 
-    if cmd == 'view':
+    if cmd == 'create':
+        title = parse_flag(args, '--title')
+        kernel = parse_flag(args, '--kernel', 'python3')
+        cmd_create(args[0], title=title, kernel=kernel)
+    elif cmd == 'view':
         cmd_view(args[0])
     elif cmd == 'read':
         nums = parse_flag(args, '--nums', is_bool=True)

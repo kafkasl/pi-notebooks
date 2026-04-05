@@ -13,6 +13,12 @@ The `nb` CLI operates on cells by index, showing clean source content.
 
 All commands: `python3 {baseDir}/nb.py <command> [args]`
 
+### Create a notebook
+```bash
+python3 {baseDir}/nb.py create <path>                          # empty notebook
+python3 {baseDir}/nb.py create <path> --title "# My Notebook"  # with title cell
+```
+
 ### View notebook structure
 ```bash
 python3 {baseDir}/nb.py view <path>
